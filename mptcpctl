@@ -123,7 +123,7 @@ function vbox_update_ifaces {
 		cmd="${cmd} --nic${cnt} bridged --bridgeadapter${cnt} ${iface}"
 		let cnt+=1
 	done
-	echo ${cmd}
+	${cmd}
 }
 
 function vbox_is_running {
@@ -188,12 +188,12 @@ function vbox_delete {
 
 function host_detect_iface_filter {
 	# detect the host adapter based on filter $1
-	ifconfig -l | grep -Po ${1} | tr "\n" " "
+	ifconfig -l | grep -Go ${1} | tr "\n" " "
 }
 
 function host_detect_iface {
 	# detect the host adapter based named en*
-	host_detect_iface_filter "en[0-9]+"
+	host_detect_iface_filter "en[0-9]"
 }
 
 function host_is_iface_inactive {
@@ -280,6 +280,7 @@ function host_stop_ipfw {
 function host_enable_ip_forward {
 	# Enable IP forwarding
 	sudo sysctl -w net.inet.ip.fw.enable=1 > /dev/null
+	sudo sysctl -w net.inet.ip.forwarding=1 > /dev/null
 }
 
 ### -------- Utility functions ---------

@@ -1,0 +1,492 @@
+#!/bin/bash
+
+TEMP_DIR="/tmp/org.multipath-tcp/"
+mkdir -p ${TEMP_DIR}
+
+### ------- Communication with the virtual machine ----------
+
+MPTCP_PROXY_TELNET_PORT=13121
+
+function proxy_send_output {
+	# Send a command to the proxy
+	# $1  := command line to execute on the proxy
+	# out := result of the command line
+	expect -c " \
+log_user 0; \
+spawn telnet -l root 127.0.0.1 ${MPTCP_PROXY_TELNET_PORT}; \
+sleep .1
+expect \"Password:\"; \
+send \"mptcp\n\"; \
+sleep .1
+expect \"root@mptcp-proxy:~# \"; \
+send \"${1}\n\"; \
+sleep .1
+expect -indices \"root@mptcp-proxy:~# \"; \
+sleep .1
+send \"exit\n\"; \
+puts [string range \$expect_out(buffer) [expr ${#1} + 2] \
+[expr \$expect_out(0,start) - 2]];"
+}
+
+function proxy_send {
+	# Send a command to the proxy
+	# $1  := command line to execute on the proxy
+	proxy_send_output "$1" > /dev/null
+}
+
+function proxy_set_resolver {
+	# Configure the proxy's resolv.conf
+	# $1  := resolver to use
+	proxy_send "echo nameserver $1 > /etc/resolv.conf"
+}
+
+function proxy_copy_resolv.conf {
+	# Configure the proxy's resolv.conf with a local one
+	# $1  := resolv.conf path
+	proxy_set_resolver $(sed -n 's/nameserver \(.*\)/\1/p' /etc/resolv.conf | head -1)
+	# notify squid that the resolv.conf has changed
+	proxy_send "squid -k reconfigure"
+}
+
+function proxy_iface_lookup {
+	# Returns the interface that matches a mac address
+	# $1  := a mac address in lowercase (e.g. ab:cd:ef:12:34)
+	# out := the interface that matches
+	proxy_send_output "ifconfig -a | grep $1" | awk '{ print $1 }'
+}
+
+function proxy_iface_setup {
+	# Configure an interface
+	# $1  := interface name (e.g. eth1)
+	# $2  := a /24 network (e.g. 10.3.45.0)
+	local iface=$1
+	local table=${iface#${iface%?}}
+	local network=$2
+	local address=${network%?}2
+	local router=${network%?}1
+	proxy_send "ifconfig ${iface} ${address}/24 up"
+	proxy_send "ip rule add from ${address} table ${table}"
+	proxy_send "ip route add ${network}/24 dev ${iface} scope link table ${table}"
+	proxy_send "ip route add default via ${router} dev ${iface} table ${table}"
+}
+
+function proxy_iface_destroy {
+	# Deconfigure an interface
+	# $1  := interface name (e.g. eth1)
+	local iface=$1
+	local table=${iface#${iface%?}}
+	proxy_send "ifconfig ${iface} down"
+	proxy_send "ip rule del lookup ${table}"
+	proxy_send "ip route flush table ${table}"
+}
+
+function proxy_set_default_route {
+	# Set the default route
+	# $1  := interface name (e.g. eth1)
+	# $2  := a /24 network (e.g. 10.3.45.0)
+	proxy_send "ip route add default via ${2%?}1 dev ${1}"
+}
+
+function proxy_unset_default_route {
+	# Remove the default route
+	proxy_send "ip route del default"
+}
+
+function proxy_is_running {
+	# Returns whether the proxy is running (simple scan)
+	nc -z 127.0.0.1 ${MPTCP_PROXY_TELNET_PORT} > /dev/null
+	[ $? -eq 0 ]
+}
+
+function proxy_is_running2 {
+	# Returns whether the proxy is running (try to connect)
+	[ -n "$(echo "QUIT" | nc -w 5 127.0.0.1 ${MPTCP_PROXY_TELNET_PORT})" ]
+}
+
+### -------- VirtualBox functions ---------
+
+VBOX_NAME="MPTCPProxy"
+
+function vbox_get_virtual_mac {
+	# Returns the mac address of the virtual interface mapped to an adapter
+	local mac=$(VBoxManage showvminfo MPTCPProxy --machinereadable |
+		    sed -n "/^bridgeadapter.*${1}.*/{n;p;}" |
+		    sed 's/^macaddress[0-9]*="\(.*\)"/\1/')
+	echo $mac | awk '{print tolower($0)}' | sed 's/../&:/g;s/:$//'
+}
+
+function vbox_update_ifaces {
+	# Lookup for adapter and map them to a virtual interface
+	local cnt=2
+	local cmd="VBoxManage modifyvm ${VBOX_NAME}"
+	IFS=' '; for iface in $(host_detect_iface); do
+		cmd="${cmd} --nic${cnt} bridged --bridgeadapter${cnt} ${iface}"
+		let cnt+=1
+	done
+	echo ${cmd}
+}
+
+function vbox_is_running {
+	# Check whether the virtual machine is running
+	[ -n "$(VBoxManage list runningvms | grep ${VBOX_NAME})" ]
+}
+
+function vbox_exists {
+	# Check whether the virtual machine was imported into VirtualBox
+	[ -n "$(VBoxManage list vms | grep ${VBOX_NAME})" ]
+}
+
+
+function vbox_start {
+	# Start the virtual machine
+	cat > ${TEMP_DIR}org.multipath-tcp.vbox.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.multipath-tcp.vbox</string>
+	<key>OnDemand</key>
+	<false/>
+	<key>ProgramArguments</key>
+	<array>
+		<string>VBoxHeadless</string>
+		<string>-startvm</string>
+		<string>${VBOX_NAME}</string>
+		<string>-v</string>
+		<string>off</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+</dict>
+</plist>
+EOF
+	launchctl load ${TEMP_DIR}org.multipath-tcp.vbox.plist 
+}
+
+function vbox_stop {
+	# Stop the virtual machine
+	launchctl unload ${TEMP_DIR}org.multipath-tcp.vbox.plist
+}
+
+function vbox_export_to {
+	# Export the virtual appliance to $1
+	VBoxManage export ${VBOX_NAME} -o ${1}
+}
+
+function vbox_import {
+	# Import the virtual appliance from $1
+	VBoxManage import ${1} --options keepallmacs
+}
+
+function vbox_delete {
+	# Remove the virtual appliance 
+	VBoxManage unregistervm ${VBOX_NAME} --delete
+}
+
+### ------- Host commands ----------
+
+function host_detect_iface_filter {
+	# detect the host adapter based on filter $1
+	ifconfig -l | grep -Po ${1} | tr "\n" " "
+}
+
+function host_detect_iface {
+	# detect the host adapter based named en*
+	host_detect_iface_filter "en[0-9]+"
+}
+
+function host_is_iface_inactive {
+	# Returns whether the interface$1 is not currenly used
+	[ -n "$(ifconfig ${1} | grep inactive)" ]
+}
+
+function host_is_iface_active {
+	# Returns whether the interface$1 is currenly used
+	[ -z "$(ifconfig ${1} | grep inactive)" ]
+}
+
+function host_iface_has_any_address {
+	# Returns whether the interface has an IP address or not
+	[ -n "$(ifconfig ${1} | grep 'inet ')" ]
+}
+
+function host_iface_has_address {
+	# Returns whether the interface $1 is configured with an address in the
+	# network $2
+	[ -n "$(ifconfig ${1} | grep ${2%?}1)" ]
+}
+
+function host_iface_alias_is_set {
+	# Returns wether the interface $1 is configured with an alias
+	host_iface_has_address ${1} $(host_iface_prefix ${1})
+}
+
+function host_iface_add_alias {
+	# Configure an alias in the network $2 on the adapter $1
+	sudo ifconfig ${1} alias ${2%?}1/24
+}
+
+function host_iface_set_alias {
+	# Configure an alias on the adapter $1
+	host_iface_add_alias ${1} $(host_iface_prefix ${1})
+}
+
+function host_iface_del_alias {
+	# Remove an alias in the network $2 on the adapter $1
+	sudo ifconfig ${1} -alias ${2%?}1
+}
+
+function host_iface_unset_alias {
+	# Remove the alias on the adapter $1
+	host_iface_del_alias ${1} $(host_iface_prefix ${1}) 2> /dev/null
+}
+
+function host_get_default_interface {
+	# Return the default route's interface
+	route -n get 8.8.8.8 | sed -n 's/.*interface: \(.*\)/\1/p'
+}
+
+function host_start_natd {
+	# Start natd on interface $1
+	cat > ${TEMP_DIR}natd-${1}.conf <<EOF
+port $(host_natd_port $1)
+interface ${1}
+dynamic yes
+EOF
+	host_stop_natd $@
+	sudo natd -f ${TEMP_DIR}natd-${1}.conf
+}
+
+function host_stop_natd {
+	# Stop natd on interface $1
+	local pid=$(ps aux | grep natd-${1} | grep -v grep | awk '{ print $2 }')
+	[ -z ${pid} ] || sudo kill -9 ${pid}
+}
+
+function host_start_ipfw {
+	# Start ipfw to forward packets to natd
+	host_stop_ipfw
+	IFS=' '; for iface in $(host_detect_iface); do
+		sudo ipfw add divert $(host_natd_port ${iface}) all from any to any recv ${iface} > /dev/null
+	done
+}
+
+function host_stop_ipfw {
+	# Stop ipfw
+	sudo ipfw -f flush > /dev/null
+}
+
+function host_enable_ip_forward {
+	# Enable IP forwarding
+	sudo sysctl -w net.inet.ip.fw.enable=1 > /dev/null
+}
+
+### -------- Utility functions ---------
+
+function util_hash {
+	# Return a decimal hash of string $1
+	local dec=$((0x$(echo ${1} | md5)))
+	echo ${dec#-}
+}
+
+function host_iface_prefix {
+	# Return a /24 network for interface $1
+	local hash=$(util_hash ${1})
+	local net16=$(expr $(expr ${hash} / 256) % 256)
+	local net24=$(expr ${hash} % 256)
+	echo "10.${net16}.${net24}.0"
+}
+
+function host_natd_port {
+	# Return the port used by natd for interface $1
+	echo $(expr $(expr $(util_hash ${1}) % 55536) + 10000)
+}
+
+function make_sure_proxy_is_running {
+	# Ensure that the proxy is started and running before returning
+	if ! vbox_is_running; then
+		echo "[global] The proxy is not yet running! -> warming up."
+		vbox_start
+	
+		echo "[global] Waiting for the proxy to start."
+		while ! proxy_is_running2; do
+			continue
+		done
+	fi
+}
+
+function make_sure_proxy_is_stoped {
+	# Ensure that the proxy is shutdown
+	if vbox_is_running; then
+		vbox_stop
+	fi
+}
+
+function perform_update {
+	# Update the Proxy's interfaces and routes based on the host network
+	# changes
+	local update=false
+	! proxy_is_running && echo "[global] The proxy is not running -> no update possible." && return
+	
+	echo "[global] route changes might have occurred -> check."
+	
+	IFS=' '; for iface in $(host_detect_iface); do
+		if host_iface_alias_is_set ${iface} && host_is_iface_inactive ${iface}; then
+			proxy_iface=$(proxy_iface_lookup $(vbox_get_virtual_mac $iface))
+			echo "[${iface}] is now down and was used -> cleanup."
+			host_iface_unset_alias $iface
+			proxy_iface_destroy ${proxy_iface}
+			host_stop_natd ${iface}
+			update=true
+		elif host_is_iface_active ${iface} && ! host_iface_alias_is_set ${iface} && \
+		   host_iface_has_any_address; then
+			proxy_iface=$(proxy_iface_lookup $(vbox_get_virtual_mac $iface))
+			network=$(host_iface_prefix ${iface})
+			echo "[${iface}] is now up and thus can be used -> setting up."
+			host_iface_set_alias $iface
+			proxy_iface_setup ${proxy_iface} ${network}
+			host_start_natd ${iface}
+			update=true
+		else
+			echo "[${iface}] no changes detected."
+		fi
+	done
+
+	if ${update}; then
+		default_iface=$(host_get_default_interface)
+		default_iface_network=$(host_iface_prefix ${default_iface})
+		proxy_iface=$(proxy_iface_lookup $(vbox_get_virtual_mac $default_iface))
+		echo "[global] setting up new default route via ${proxy_iface} ${default_iface_network%?}1"
+		proxy_unset_default_route
+		proxy_set_default_route ${proxy_iface} ${default_iface_network}
+		echo "[global] copy new resolv.conf"
+		proxy_copy_resolv.conf /etc/resolv.conf	
+		host_start_ipfw
+	fi
+}
+
+
+LAST_ROUTE_CHANGE=$(date +%s)
+
+function host_route_changed {
+	# Callback used by host_start_monitor
+	while read data; do
+		local now=$(date +%s)
+		# not yet IPv6
+		data=$(echo ${data} | grep -v ffff:ffff:ffff:ffff::)
+		[ -z "${data}" ] && continue
+		[ $(expr ${now} - ${LAST_ROUTE_CHANGE}) -gt 1 ] && perform_update
+		LAST_ROUTE_CHANGE=${now}
+	done
+}
+
+function host_start_monitor {
+	# Monitor the routes and update the proxy when changes occurs
+	route -n monitor | grep --line-buffered 'default' | host_route_changed
+}
+
+function host_has_command {
+	# Check whether the host has the command $1
+	command -v ${1} >/dev/null 2>&1
+}
+
+### -------- ################# ---------
+
+# Requirements:
+host_has_command VBoxManage || { echo >&2 "VirtualBox was not found. Aborting."; exit 1; }
+host_has_command expect || { echo >&2 "expect was not found. Aborting."; exit 1; }
+host_has_command nc || { echo >&2 "netcat was not found. Aborting."; exit 1; }
+host_has_command route || { echo >&2 "route was not found. Aborting."; exit 1; }
+host_has_command natd || { echo >&2 "natd was not found. Aborting."; exit 1; }
+host_has_command ipfw || { echo >&2 "ipfw was not found. Aborting."; exit 1; }
+
+# Main:
+case $1 in
+start)
+	proxy_is_running && echo "[global] The proxy is already running -> exiting" && exit
+	! vbox_exists && echo "[global] Please run $0 import before start" && exit
+
+	make_sure_proxy_is_running
+
+	host_enable_ip_forward
+	
+	default_iface=$(host_get_default_interface)
+	IFS=' '; for iface in $(host_detect_iface); do
+		proxy_iface=$(proxy_iface_lookup $(vbox_get_virtual_mac $iface))
+		network=$(host_iface_prefix $iface)
+
+		echo "[${iface}] is mapped to ${proxy_iface}"
+
+		if host_is_iface_inactive $iface; then
+			echo "[${iface}] is inactive -> cleaning up"
+			host_iface_unset_alias $iface
+			proxy_iface_destroy ${proxy_iface}
+			continue
+		else
+			echo "[${iface}] is active -> using ${network}/24"
+			host_iface_set_alias $iface
+			proxy_iface_setup ${proxy_iface} ${network}
+		
+			if [ "${iface}" == "${default_iface}" ]; then
+				echo "[${iface}] is the current default interface"
+				echo "[${iface}] set ${proxy_iface} as default interface"
+				proxy_set_default_route ${proxy_iface} ${network}
+			fi
+		fi
+		echo "[${iface}] start natd"
+		host_start_natd $iface
+	done
+	echo "[global] copy resolv.conf"
+	proxy_copy_resolv.conf /etc/resolv.conf	
+	echo "[global] start ipfw"
+	host_start_ipfw
+	;;
+stop)
+	echo "[global] stopping ipfw"
+	host_stop_ipfw
+
+	IFS=' '; for iface in $(host_detect_iface); do
+		echo "[${iface}] -> cleaning up"
+		host_iface_unset_alias $iface
+		echo "[${iface}] stopping natd"
+		host_stop_natd ${iface}
+	done
+	echo "[global] stopping the proxy"
+	make_sure_proxy_is_stoped
+	;;
+update)
+	perform_update
+	;;
+monitor)
+	host_start_monitor
+	;;
+export) 
+	[ -z $2 ] && echo "Usage: $0 export FILE" && exit
+	proxy_is_running && echo "Need to stop proxy first! ($0 stop)" && exit
+	vbox_export_to $2
+	;;
+import) 
+	[ -z $2 ] && echo "Usage: $0 import FILE" && exit
+	proxy_is_running && echo "Need to stop proxy first! ($0 stop)" && exit
+
+	if vbox_exists; then
+		echo "Virtual machine exists -> deleting."
+		vbox_delete
+	fi
+	vbox_import $2
+	vbox_update_ifaces
+	;;
+upgrade)
+	echo "Not yet implemented"
+	;;
+status)
+	echo -n "[global] Virtual machine is "
+	vbox_is_running && echo "running" || echo "not running"
+	echo -n "[global] Proxy is "
+	proxy_is_running && echo "alive" || echo "dead"
+	;;
+*)
+	echo "Usage: $0 {start|stop|status|import|export|upgrade|monitor|update}"
+	;;
+esac

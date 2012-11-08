@@ -109,13 +109,24 @@ VBOX_NAME="MPTCPProxy"
 
 function vbox_get_virtual_mac {
 	# Returns the mac address of the virtual interface mapped to an adapter
-	local mac=$(VBoxManage showvminfo MPTCPProxy --machinereadable |
+	local mac=$(VBoxManage showvminfo $(VBOX_NAME) --machinereadable |
 		    sed -n "/^bridgeadapter.*${1}.*/{n;p;}" |
 		    sed 's/^macaddress[0-9]*="\(.*\)"/\1/')
 	echo $mac | awk '{print tolower($0)}' | sed 's/../&:/g;s/:$//'
 }
 
+function vbox_clear_ifaces {
+	local cmd="VBoxManage modifyvm ${VBOX_NAME}"
+	for id in `seq 2 8`; do
+		cmd="${cmd} --nic${id} none"
+	done
+	${cmd}
+}
+
 function vbox_update_ifaces {
+	# first remove virtual interfaces
+	vbox_clear_ifaces
+
 	# Lookup for adapter and map them to a virtual interface
 	local cnt=2
 	local cmd="VBoxManage modifyvm ${VBOX_NAME}"
@@ -462,6 +473,10 @@ update)
 monitor)
 	host_start_monitor
 	;;
+update-ifaces)
+	proxy_is_running && echo "Need to stop proxy first! ($0 stop)" && exit
+	vbox_update_ifaces
+	;;
 export) 
 	[ -z $2 ] && echo "Usage: $0 export FILE" && exit
 	proxy_is_running && echo "Need to stop proxy first! ($0 stop)" && exit
@@ -488,6 +503,6 @@ status)
 	proxy_is_running && echo "alive" || echo "dead"
 	;;
 *)
-	echo "Usage: $0 {start|stop|status|import|export|upgrade|monitor|update}"
+	echo "Usage: $0 {start|stop|status|import|export|upgrade|monitor|update|update-ifaces}"
 	;;
 esac

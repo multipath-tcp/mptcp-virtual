@@ -8,7 +8,7 @@ do not expect good performances.
 How does it work ?
 ------------------
 
-The solution is quite straight forward: take a virtual machine running the
+The solution is quite straightforward: take a virtual machine running the
 [Linux kernel version of Multipath TCP](https://github.com/cpaasch/mptcp) and
 redirect traffic through it. The project however goes even beyond that. Indeed,
 this project main goals are to:

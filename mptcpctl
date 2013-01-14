@@ -109,7 +109,7 @@ VBOX_NAME="MPTCPProxy"
 
 function vbox_get_virtual_mac {
 	# Returns the mac address of the virtual interface mapped to an adapter
-	local mac=$(VBoxManage showvminfo $(VBOX_NAME) --machinereadable |
+	local mac=$(VBoxManage showvminfo ${VBOX_NAME} --machinereadable |
 		    sed -n "/^bridgeadapter.*${1}.*/{n;p;}" |
 		    sed 's/^macaddress[0-9]*="\(.*\)"/\1/')
 	echo $mac | awk '{print tolower($0)}' | sed 's/../&:/g;s/:$//'

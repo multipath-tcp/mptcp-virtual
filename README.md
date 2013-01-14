@@ -36,7 +36,7 @@ to run the MPTCP's virtual machine.
 The project only depends on a single script: `mptcpctl`. To install it, simply
 run the following:
 
-	$ sudo curl https://raw.github.com/gdetal/mptcp-virtual/master/mptcpctl -o /usr/local/bin/mptcpctl
+	$ sudo curl https://raw.github.com/multipath-tcp/mptcp-virtual/master/mptcpctl -o /usr/local/bin/mptcpctl
 	$ sudo chmod +x /usr/local/bin/mptcpctl
 
 Usage
@@ -45,7 +45,7 @@ Usage
 The first step is to import the VirtualBox appliance (this can be skipped if
 already imported):
 
-	$ curl -L https://github.com/downloads/gdetal/mptcp-virtual/mptcp-virtual.ova -o /tmp/mptcp-virtual.ova
+	$ curl -L https://github.com/downloads/multipath-tcp/mptcp-virtual/mptcp-virtual.ova -o /tmp/mptcp-virtual.ova
 	$ mptcpctl import /tmp/mptcp-virtual.ova
 
 Once this step is performed then the proxy can be started:

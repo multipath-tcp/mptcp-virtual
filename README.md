@@ -45,7 +45,7 @@ Usage
 The first step is to import the VirtualBox appliance (this can be skipped if
 already imported):
 
-	$ curl -L https://github.com/downloads/multipath-tcp/mptcp-virtual/mptcp-virtual.ova -o /tmp/mptcp-virtual.ova
+	$ curl -L http://mptcp.info.ucl.ac.be/data/mptcp-virtual.ova -o /tmp/mptcp-virtual.ova
 	$ mptcpctl import /tmp/mptcp-virtual.ova
 
 Once this step is performed then the proxy can be started:

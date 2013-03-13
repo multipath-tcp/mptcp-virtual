@@ -421,6 +421,8 @@ start)
 	proxy_is_running && echo "[global] The proxy is already running -> exiting" && exit
 	! vbox_exists && echo "[global] Please run $0 import before start" && exit
 
+	vbox_update_ifaces
+
 	make_sure_proxy_is_running
 
 	host_enable_ip_forward

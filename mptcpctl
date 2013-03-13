@@ -279,7 +279,9 @@ function host_start_ipfw {
 	# Start ipfw to forward packets to natd
 	host_stop_ipfw
 	IFS=' '; for iface in $(host_detect_iface); do
-		sudo ipfw add divert $(host_natd_port ${iface}) all from any to any recv ${iface} > /dev/null
+		local network=$(host_iface_prefix ${iface})
+		sudo ipfw add divert $(host_natd_port ${iface}) all from ${network%?}2 to any out recv ${iface} > /dev/null
+		sudo ipfw add divert $(host_natd_port ${iface}) all from any to me in recv ${iface} > /dev/null
 	done
 }
 

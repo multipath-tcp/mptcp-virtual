@@ -100,7 +100,7 @@ function proxy_is_running {
 
 function proxy_is_running2 {
 	# Returns whether the proxy is running (try to connect)
-	[ -n "$(echo "QUIT" | nc -w 5 127.0.0.1 ${MPTCP_PROXY_TELNET_PORT})" ]
+	[ -n "$(echo "QUIT" | nc -w 5 127.0.0.1 ${MPTCP_PROXY_TELNET_PORT} 2> /dev/null)" ]
 }
 
 ### -------- VirtualBox functions ---------
@@ -150,7 +150,8 @@ function vbox_exists {
 
 function vbox_start {
 	# Start the virtual machine
-	cat > ${TEMP_DIR}org.multipath-tcp.vbox.plist <<EOF
+	if host_is_darwin; then
+		cat > ${TEMP_DIR}org.multipath-tcp.vbox.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -172,12 +173,19 @@ function vbox_start {
 </dict>
 </plist>
 EOF
-	launchctl load ${TEMP_DIR}org.multipath-tcp.vbox.plist 
+		launchctl load ${TEMP_DIR}org.multipath-tcp.vbox.plist
+	else
+		VBoxHeadless -startvm ${VBOX_NAME} -v off > /dev/null &
+	fi
 }
 
 function vbox_stop {
 	# Stop the virtual machine
-	launchctl unload ${TEMP_DIR}org.multipath-tcp.vbox.plist
+	if host_is_darwin; then
+		launchctl unload ${TEMP_DIR}org.multipath-tcp.vbox.plist
+	else
+		VBoxManage controlvm ${VBOX_NAME} poweroff 2> /dev/null
+	fi
 }
 
 function vbox_export_to {
@@ -197,24 +205,48 @@ function vbox_delete {
 
 ### ------- Host commands ----------
 
+function host_is_linux {
+	[ "`uname -s`" == "Linux" ]
+}
+
+function host_is_darwin {
+	[ "`uname -s`" == "Darwin" ]
+}
+
 function host_detect_iface_filter {
 	# detect the host adapter based on filter $1
-	ifconfig -l | grep -Go ${1} | tr "\n" " "
+	if host_is_darwin; then
+		ifconfig -l | grep -Go ${1} | tr "\n" " "
+	else
+		ifconfig -s -a | grep -Go ${1} | tr "\n" " "
+	fi
 }
 
 function host_detect_iface {
 	# detect the host adapter based named en*
-	host_detect_iface_filter "en[0-9]"
+	if host_is_darwin; then
+		host_detect_iface_filter "en[0-9]"
+	else
+		host_detect_iface_filter "eth[0-9]"
+	fi
 }
 
 function host_is_iface_inactive {
 	# Returns whether the interface$1 is not currenly used
-	[ -n "$(ifconfig ${1} | grep inactive)" ]
+	if host_is_darwin; then
+		[ -n "$(ifconfig ${1} | grep inactive)" ]
+	else
+		[ -z "$(ifconfig | grep ${1})" ]
+	fi
 }
 
 function host_is_iface_active {
 	# Returns whether the interface$1 is currenly used
-	[ -z "$(ifconfig ${1} | grep inactive)" ]
+	if host_is_darwin; then
+		[ -z "$(ifconfig ${1} | grep inactive)" ]
+	else
+		[ -n "$(ifconfig | grep ${1})" ]
+	fi
 }
 
 function host_iface_has_any_address {
@@ -225,7 +257,11 @@ function host_iface_has_any_address {
 function host_iface_has_address {
 	# Returns whether the interface $1 is configured with an address in the
 	# network $2
-	[ -n "$(ifconfig ${1} | grep ${2%?}1)" ]
+	if host_is_darwin; then
+		[ -n "$(ifconfig ${1} | grep ${2%?}1)" ]
+	else
+		[ -n "$(ip addr show dev ${1} | grep ${2%?}1)" ]
+	fi
 }
 
 function host_iface_alias_is_set {
@@ -235,7 +271,11 @@ function host_iface_alias_is_set {
 
 function host_iface_add_alias {
 	# Configure an alias in the network $2 on the adapter $1
-	sudo ifconfig ${1} alias ${2%?}1/24
+	if host_is_darwin; then
+		sudo ifconfig ${1} alias ${2%?}1/24
+	else
+		sudo ip addr add dev ${1} ${2%?}1/24
+	fi
 }
 
 function host_iface_set_alias {
@@ -245,7 +285,11 @@ function host_iface_set_alias {
 
 function host_iface_del_alias {
 	# Remove an alias in the network $2 on the adapter $1
-	sudo ifconfig ${1} -alias ${2%?}1
+	if host_is_darwin; then
+		sudo ifconfig ${1} -alias ${2%?}1
+	else
+		sudo ip addr del dev ${1} ${2%?}1/24
+	fi
 }
 
 function host_iface_unset_alias {
@@ -255,24 +299,36 @@ function host_iface_unset_alias {
 
 function host_get_default_interface {
 	# Return the default route's interface
-	route -n get 8.8.8.8 | sed -n 's/.*interface: \(.*\)/\1/p'
+	if host_is_darwin; then
+		route -n get 8.8.8.8 | sed -n 's/.*interface: \(.*\)/\1/p'
+	else
+		ip route get 8.8.8.8 | head -n1 | awk '{ print $5 }'
+	fi
 }
 
 function host_start_natd {
 	# Start natd on interface $1
-	cat > ${TEMP_DIR}natd-${1}.conf <<EOF
+	if host_is_darwin; then
+		cat > ${TEMP_DIR}natd-${1}.conf <<EOF
 port $(host_natd_port $1)
 interface ${1}
 dynamic yes
 EOF
-	host_stop_natd $@
-	sudo natd -f ${TEMP_DIR}natd-${1}.conf
+		host_stop_natd $@
+		sudo natd -f ${TEMP_DIR}natd-${1}.conf
+	else
+		sudo iptables -t nat -A POSTROUTING -o ${1} -j MASQUERADE
+	fi
 }
 
 function host_stop_natd {
 	# Stop natd on interface $1
-	local pid=$(ps aux | grep natd-${1} | grep -v grep | awk '{ print $2 }')
-	[ -z ${pid} ] || sudo kill -9 ${pid}
+	if host_is_darwin; then
+		local pid=$(ps aux | grep natd-${1} | grep -v grep | awk '{ print $2 }')
+		[ -z ${pid} ] || sudo kill -9 ${pid}
+	else
+		sudo iptables -t nat -D POSTROUTING -o ${1} -j MASQUERADE 2> /dev/null
+	fi
 }
 
 function host_start_ipfw {
@@ -292,15 +348,27 @@ function host_stop_ipfw {
 
 function host_enable_ip_forward {
 	# Enable IP forwarding
-	sudo sysctl -w net.inet.ip.fw.enable=1 > /dev/null
-	sudo sysctl -w net.inet.ip.forwarding=1 > /dev/null
+	if host_is_darwin; then
+		sudo sysctl -w net.inet.ip.fw.enable=1 > /dev/null
+		sudo sysctl -w net.inet.ip.forwarding=1 > /dev/null
+	else
+		sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null
+	fi
+}
+
+function host_hash {
+	if host_is_darwin; then
+		md5
+	else
+		md5sum | awk '{ print $1 }'
+	fi
 }
 
 ### -------- Utility functions ---------
 
 function util_hash {
 	# Return a decimal hash of string $1
-	local dec=$((0x$(echo ${1} | md5)))
+	local dec=$((0x$(echo ${1} | host_hash)))
 	echo ${dec#-}
 }
 
@@ -330,7 +398,7 @@ function make_sure_proxy_is_running {
 	fi
 }
 
-function make_sure_proxy_is_stoped {
+function make_sure_proxy_is_stopped {
 	# Ensure that the proxy is shutdown
 	if vbox_is_running; then
 		vbox_stop
@@ -376,7 +444,7 @@ function perform_update {
 		proxy_set_default_route ${proxy_iface} ${default_iface_network}
 		echo "[global] copy new resolv.conf"
 		proxy_copy_resolv.conf /etc/resolv.conf	
-		host_start_ipfw
+		host_is_darwin && host_start_ipfw
 	fi
 }
 
@@ -397,23 +465,36 @@ function host_route_changed {
 
 function host_start_monitor {
 	# Monitor the routes and update the proxy when changes occurs
-	route -n monitor | grep --line-buffered 'default' | host_route_changed
+	if host_is_darwin; then
+		route -n monitor | grep --line-buffered 'default' | host_route_changed
+	else
+		ip monitor | grep --line-buffered 'default' | host_route_changed
+	fi
 }
 
 function host_has_command {
 	# Check whether the host has the command $1
-	command -v ${1} >/dev/null 2>&1
+	command -v ${1} >/dev/null 2>&1 || host_has_command_sudo ${1}
+}
+
+function host_has_command_sudo {
+	sudo which ${1} > /dev/null
 }
 
 ### -------- ################# ---------
 
 # Requirements:
+host_is_linux || host_is_darwin || { echo >&2 "Unable to determine your system. Aborting."; exit 1; }
 host_has_command VBoxManage || { echo >&2 "VirtualBox was not found. Aborting."; exit 1; }
 host_has_command expect || { echo >&2 "expect was not found. Aborting."; exit 1; }
 host_has_command nc || { echo >&2 "netcat was not found. Aborting."; exit 1; }
-host_has_command route || { echo >&2 "route was not found. Aborting."; exit 1; }
-host_has_command natd || { echo >&2 "natd was not found. Aborting."; exit 1; }
-host_has_command ipfw || { echo >&2 "ipfw was not found. Aborting."; exit 1; }
+host_has_command ifconfig || { echo >&2 "ifconfig was not found. Aborting."; exit 1; }
+! host_is_darwin || host_has_command natd || { echo >&2 "natd was not found. Aborting."; exit 1; }
+! host_is_linux || host_has_command iptables || { echo >&2 "iptables was not found. Aborting."; exit 1; }
+! host_is_darwin || host_has_command ipfw || { echo >&2 "ipfw was not found. Aborting."; exit 1; }
+! host_is_darwin || host_has_command route || { echo >&2 "route was not found. Aborting."; exit 1; }
+host_has_command telnet || { echo >&2 "telnet was not found. Aborting."; exit 1; }
+! host_is_linux || host_has_command ip || { echo >&2 "ip was not found. Aborting."; exit 1; }
 
 # Main:
 case $1 in
@@ -443,7 +524,7 @@ start)
 			echo "[${iface}] is active -> using ${network}/24"
 			host_iface_set_alias $iface
 			proxy_iface_setup ${proxy_iface} ${network}
-		
+
 			if [ "${iface}" == "${default_iface}" ]; then
 				echo "[${iface}] is the current default interface"
 				echo "[${iface}] set ${proxy_iface} as default interface"
@@ -455,12 +536,12 @@ start)
 	done
 	echo "[global] copy resolv.conf"
 	proxy_copy_resolv.conf /etc/resolv.conf	
-	echo "[global] start ipfw"
-	host_start_ipfw
+	host_is_darwin && echo "[global] start ipfw"
+	host_is_darwin && host_start_ipfw
 	;;
 stop)
-	echo "[global] stopping ipfw"
-	host_stop_ipfw
+	host_is_darwin && echo "[global] stopping ipfw"
+	host_is_darwin && host_stop_ipfw
 
 	IFS=' '; for iface in $(host_detect_iface); do
 		echo "[${iface}] -> cleaning up"
@@ -469,7 +550,7 @@ stop)
 		host_stop_natd ${iface}
 	done
 	echo "[global] stopping the proxy"
-	make_sure_proxy_is_stoped
+	make_sure_proxy_is_stopped
 	;;
 update)
 	perform_update

@@ -1,17 +1,17 @@
-Multipath TCP on Mac OSX
-========================
+Multipath TCP on Mac OSX/Linux
+==============================
 
-This project allows you to use *Multipath TCP* (MPTCP) on an unmodified Mac OSX
-computer. This project is intended as to allow you to test MPTCP and so
-do not expect good performances.
+This project allows you to use *Multipath TCP* (MPTCP) on an unmodified Mac
+OSX/Linux computer. This project is intended as to allow you to test MPTCP and
+so do not expect good performances.
 
 How does it work ?
 ------------------
 
 The solution is quite straightforward: take a virtual machine running the
-[Linux kernel version of Multipath TCP](https://github.com/cpaasch/mptcp) and
-redirect traffic through it. The project however goes even beyond that. Indeed,
-this project main goals are to:
+[Linux kernel version of Multipath TCP](https://github.com/multipath-tcp/mptcp)
+and redirect traffic through it. The project however goes even beyond that.
+Indeed, this project main goals are to:
 
 * allow using the the multiple interfaces available on the host;
 * allow mobility.

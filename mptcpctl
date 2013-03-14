@@ -52,7 +52,7 @@ function proxy_iface_lookup {
 	# Returns the interface that matches a mac address
 	# $1  := a mac address in lowercase (e.g. ab:cd:ef:12:34)
 	# out := the interface that matches
-	proxy_send_output "ifconfig -a | grep $1" | awk '{ print $1 }'
+	proxy_send_output "ifconfig -a | grep -B2 ${1}" | grep flags | awk '{ print $1 }' | head -c -2
 }
 
 function proxy_iface_setup {

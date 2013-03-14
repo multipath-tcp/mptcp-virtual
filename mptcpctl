@@ -302,7 +302,7 @@ function host_get_default_interface {
 	if host_is_darwin; then
 		route -n get 8.8.8.8 | sed -n 's/.*interface: \(.*\)/\1/p'
 	else
-		ip route get 8.8.8.8 | head -n1 | awk '{ print $5 }'
+		sudo ip route get 8.8.8.8 | head -n1 | awk '{ print $5 }'
 	fi
 }
 

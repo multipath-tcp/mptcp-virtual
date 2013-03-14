@@ -45,7 +45,7 @@ Usage
 The first step is to import the VirtualBox appliance (this can be skipped if
 already imported):
 
-	$ curl -L http://mptcp.info.ucl.ac.be/data/mptcp-virtual.ova -o /tmp/mptcp-virtual.ova
+	$ curl -L http://multipath-tcp.org/data/mptcp-virtual.ova -o /tmp/mptcp-virtual.ova
 	$ mptcpctl import /tmp/mptcp-virtual.ova
 
 Once this step is performed then the proxy can be started:
@@ -64,6 +64,6 @@ Once the machine has started, then you can try Multipath TCP setting
 `127.0.0.1:13128` as a HTTP(S) proxy in your preferred application. You can
 test that it works using:
 
-	$ http_proxy="127.0.0.1:13128" curl mptcp.info.ucl.ac.be
+	$ http_proxy="127.0.0.1:13128" curl multipath-tcp.org
 
 A different message should be displayed whether you are MPTCP-capable.
